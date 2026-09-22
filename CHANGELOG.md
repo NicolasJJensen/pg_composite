@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automatic composite schema validation with `:error`, `:warn`, and `:none` modes.
 - Explicit schema checks for standalone composite types.
 
+### Changed
+
+- Use ordinary strong parameters for composite values after controller casting.
+- Remove `typed_parameters` in favor of `params.require(...).permit(...)`.
+
 ## [0.1.0] - 2026-09-21
 
 ### Added

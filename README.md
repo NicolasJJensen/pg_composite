@@ -238,14 +238,21 @@ class ServiceIndustriesController < ApplicationController
   def create
     params[:service_industry][:color] # => an OklchColor
     industry = ServiceIndustry.create!(
-      typed_parameters(:service_industry, permit: [:name])
+      params.require(:service_industry).permit(:name, :color)
     )
     redirect_to industry
   end
 end
 ```
 
-Use `typed_parameters` instead of filtering the converted object with ordinary nested `permit`. It combines permitted ordinary fields with the typed value. Missing color parameters remain missing. A malformed supplied value raises `ActionController::BadRequest`.
+The callback filters the color members using its `permit:` list, then replaces the nested parameters with an `OklchColor` object.
+PgComposite registers `PgComposite::Value` and its subclasses as permitted scalars when Action Controller loads. Ordinary `permit(:name, :color)` retains the converted object.
+
+Use `:color` in the action's permit list to allow the whole typed value. Nested `permit(color: [:hue])` does not inspect a converted object.
+Omitting `:color` from the action's permit list excludes it, even if the callback already converted it.
+
+Missing color parameters remain missing. A supplied string, array, or `nil` instead of an object raises `ActionController::BadRequest`.
+Invalid numeric input also raises `ActionController::BadRequest`. Without `cast_parameter`, use ordinary nested strong parameters and let the model cast the permitted hash.
 
 ## Schema validation
 
@@ -327,11 +334,12 @@ attribute :color, OklchColorType.new
 ### `PgComposite::Parameters`
 
 - `cast_parameter(path, type:, permit:, **callback_options)` registers a controller callback.
-- `typed_parameters(root = nil, permit: [])` returns permitted ordinary fields and the typed values cast by the callback.
 
 ## Internals
 
 PgComposite extends Active Record and Arel when Active Record loads. Composite attributes return PgComposite Arel nodes for columns and members. PostgreSQL visitors render those nodes as composite SQL. The predicate builder handles member hashes such as `where(color: { hue: 180 })`.
+
+When Action Controller loads, PgComposite adds its value base class to Rails' global permitted-scalar list. This includes application-defined composite subclasses.
 
 The patches preserve ordinary Active Record behavior for non-composite attributes. Non-PostgreSQL visitors raise `PgComposite::UnsupportedAdapter` when they receive a composite node.
 

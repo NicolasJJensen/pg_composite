@@ -22,21 +22,8 @@ module PgComposite
             raise ActionController::BadRequest, "Invalid #{path.join('.')}: #{error.message}"
           end
           parent[path.last] = typed
-          (@composite_parameters ||= {})[path] = typed
         end
       end
-    end
-
-    # Only merge values that this concern has already filtered and cast.
-    def typed_parameters(root = nil, permit: [])
-      prefix = Array(root).map(&:to_s)
-      source = prefix.reduce(params) { |container, key| container.require(key) }
-      attributes = source.permit(*permit).to_h
-      (@composite_parameters || {}).each do |path, value|
-        next unless path[0...-1] == prefix
-        attributes[path.last] = value
-      end
-      attributes
     end
   end
 end

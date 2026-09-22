@@ -19,3 +19,8 @@ ActiveSupport.on_load(:active_record) do
   Arel::Visitors::PostgreSQL.include(PgComposite::Visitor)
   ActiveRecord::PredicateBuilder.prepend(PgComposite::Predicates)
 end
+
+ActiveSupport.on_load(:action_controller) do
+  scalar_types = ActionController::Parameters::PERMITTED_SCALAR_TYPES
+  scalar_types << PgComposite::Value unless scalar_types.include?(PgComposite::Value)
+end

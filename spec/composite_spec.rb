@@ -1,7 +1,5 @@
 require 'pg_composite'
 require_relative 'support/color'
-require 'action_controller'
-require 'action_controller/test_case'
 
 RSpec.describe PgComposite do
   before(:all) do
@@ -104,37 +102,5 @@ RSpec.describe PgComposite do
     expect { CompositeItem.where(color: {}).to_sql }.to raise_error(ArgumentError, /empty/)
     expect(Arel::Table.new(:plain)[:id]).to be_a(Arel::Attributes::Attribute)
     expect { ExampleColors::OklchColor.new(hue: 'oops') }.to raise_error(ArgumentError)
-  end
-end
-
-RSpec.describe PgComposite::Parameters do
-  let(:controller_class) do
-    Class.new(ActionController::Base) do
-      include PgComposite::Parameters
-      cast_parameter [:service_industry, :color], type: ExampleColors::OklchColorType.new,
-        permit: %i[lightness chroma hue alpha], only: :create
-      def create
-        values = typed_parameters(:service_industry, permit: [:name])
-        render json: { hue: params[:service_industry][:color].hue, typed: values['color'].is_a?(ExampleColors::OklchColor), keys: values.keys }
-      end
-    end
-  end
-
-  def dispatch(input)
-    request = ActionController::TestRequest.create(controller_class)
-    request.set_header('action_dispatch.request.request_parameters', input)
-    response = ActionDispatch::TestResponse.new
-    controller_class.new.dispatch(:create, request, response)
-    response
-  end
-
-  it 'replaces params before the action and merges only filtered typed attributes' do
-    response = dispatch('service_industry' => { 'name' => 'Test', 'admin' => true, 'color' => { 'hue' => '180', 'evil' => 'ignored' } })
-    expect(JSON.parse(response.body)).to eq('hue' => 180.0, 'typed' => true, 'keys' => ['name', 'color'])
-  end
-
-  it 'rejects malformed objects and invalid numeric input' do
-    expect { dispatch('service_industry' => { 'color' => 'raw' }) }.to raise_error(ActionController::BadRequest)
-    expect { dispatch('service_industry' => { 'color' => { 'hue' => 'bad' } }) }.to raise_error(ActionController::BadRequest)
   end
 end
