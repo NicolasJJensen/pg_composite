@@ -1,46 +1,55 @@
 # PgComposite
 
-Use Ruby objects for PostgreSQL composite columns. Define the members of your value, assign it to an Active Record attribute, and work with it through ordinary model assignment and queries.
+PgComposite maps a PostgreSQL composite column to a typed Ruby value object. Assign values through Active Record and query members through hashes or Arel.
 
-**This gem is PostgreSQL-only.** It generates PostgreSQL composite-type SQL and has no fallback for other databases. On any other adapter the composite nodes raise `PgComposite::UnsupportedAdapter` instead of building SQL.
+Requires Ruby 3.1+, Active Record 7.0 through 8.x, and the PostgreSQL adapter. The setup below creates the database type and column used here.
 
-The example below stores a color as one column containing lightness, chroma, hue, and alpha. `OklchColor` is a class you define in your application.
+```ruby
+class OklchColor < PgComposite::Value
+  self.sql_type = "oklch_color"
+
+  member :lightness, type: :float, default: 0.0
+  member :chroma, type: :float, default: 0.0
+  member :hue, type: :float, default: 0.0
+  member :alpha, type: :float, default: 1.0
+end
+
+class ServiceIndustry < ApplicationRecord
+  attribute :color, PgComposite::Type.new(value_class: OklchColor)
+end
+
+industry = ServiceIndustry.create!(
+  name: "Design",
+  color: OklchColor.new(lightness: 0.7, chroma: 0.15, hue: 180, alpha: 1)
+)
+
+ServiceIndustry.where(color: { hue: 180 }).first.color.hue # => 180.0
+```
 
 ## Installation
 
-Add the gem to your application's Gemfile and run `bundle install`:
+Add PgComposite to your Gemfile:
 
 ```ruby
 gem "pg_composite"
 ```
 
-Requires Ruby 3.1+, Active Record 7.0 through 8.x, and PostgreSQL. Controller
-parameter casting also needs Action Pack.
-The suite runs green on Active Record 7.0, 7.1, 7.2, 8.0, and 8.1.
+Run `bundle install`. Rails normally loads the gem through `Bundler.require`.
+In a standalone Active Record application, require PgComposite explicitly:
 
-## How it hooks in
+```ruby
+require "pg_composite"
+```
 
-Loading the gem patches Arel and Active Record. There is no opt-in step and no
-configuration flag. Requiring the gem installs all of it, and Bundler does that
-require for you. The patches run inside `ActiveSupport.on_load(:active_record)`,
-so they apply when Active Record loads rather than when the gem is required.
+PgComposite does not open a database connection when you require it. It also does not open a connection when you construct a value object.
 
-| Target | How | What it changes |
-| --- | --- | --- |
-| `Arel::Table` | `prepend` | `[]` returns a `PgComposite::Column` for attributes typed as a composite |
-| `Arel::Nodes::TableAlias` | `prepend` | the same `[]` behaviour on an aliased table |
-| `Arel::Visitors::PostgreSQL` | `include` | visitors for the composite column, member, and cast nodes |
-| `Arel::Visitors::ToSql` | `include` | the same three visitors, raising `PgComposite::UnsupportedAdapter` on every other adapter |
-| `ActiveRecord::PredicateBuilder` | `prepend` | registers a `Hash` handler so `where(color: { hue: 180 })` compares members |
+The optional controller parameter concern requires Action Pack. The [compatibility workflow](https://github.com/NicolasJJensen/pg_composite/actions/workflows/compatibility.yml) tests Rails 7.0, 7.1, 7.2, 8.0, and 8.1 on supported Ruby versions.
 
-Each patch falls back to the original behaviour for anything that is not a composite
-attribute, so ordinary tables, columns, and `where` hashes keep working as before.
+## Getting started
 
-## Setup
+### Create the PostgreSQL type
 
-### 1. Create the PostgreSQL type
-
-Skip this migration if the type already exists.
+Create the composite type in a migration. Use your application's Rails migration version in place of `8.0` if needed:
 
 ```ruby
 class CreateOklchColorType < ActiveRecord::Migration[8.0]
@@ -61,9 +70,7 @@ class CreateOklchColorType < ActiveRecord::Migration[8.0]
 end
 ```
 
-### 2. Use the type in a table
-
-Create a separate migration for the table. For an existing table, add the column instead.
+Create the table column in a separate migration:
 
 ```ruby
 class CreateServiceIndustries < ActiveRecord::Migration[8.0]
@@ -76,11 +83,16 @@ class CreateServiceIndustries < ActiveRecord::Migration[8.0]
 end
 ```
 
-Set `config.active_record.schema_format = :sql` in `config/application.rb` to preserve the PostgreSQL type definition in schema dumps.
+Set the SQL schema format so schema dumps preserve the PostgreSQL type definition:
 
-### 3. Define the Ruby value
+```ruby
+# config/application.rb
+config.active_record.schema_format = :sql
+```
 
-Declare members in the same order as the database type:
+### Define the value
+
+Set `sql_type` to the database type name, optionally schema-qualified, such as `"public.oklch_color"`. Declare members in database order:
 
 ```ruby
 # app/models/oklch_color.rb
@@ -88,44 +100,33 @@ class OklchColor < PgComposite::Value
   self.sql_type = "oklch_color"
 
   member :lightness, type: :float, default: 0.0
-  member :chroma,    type: :float, default: 0.0
-  member :hue,       type: :float, default: 0.0
-  member :alpha,     type: :float, default: 1.0
+  member :chroma, type: :float, default: 0.0
+  member :hue, type: :float, default: 0.0
+  member :alpha, type: :float, default: 1.0
 end
 ```
 
-| `member` option | Purpose | Default |
+`member` accepts these options:
+
+| Option | Purpose | Default |
 | --- | --- | --- |
-| `type:` | The Active Model scalar type used to cast the value. | `:float` |
-| `default:` | Value used when that member is omitted from a hash. | `nil` |
-| `column:` | Database member name, if it differs from the Ruby name. | The Ruby name |
+| `type:` | Active Model scalar type used to cast the member. | `:float` |
+| `default:` | Value used when a hash omits the member. | `nil` |
+| `column:` | Database member name when it differs from the Ruby name. | The Ruby name |
 
-For example, `member :chroma, column: :color` maps Ruby's `chroma` to a database member named `color`.
+For example, `member :chroma, column: :color` maps Ruby member `chroma` to database member `color`. The PostgreSQL type must declare a member named `color` in the corresponding position. Schema validation checks this mapping and the declared order when enabled.
 
-### 4. Define a reusable attribute type
-
-Pair the value class with a type that you can reuse across models and form objects:
-
-```ruby
-# app/types/oklch_color_type.rb
-class OklchColorType < PgComposite::Type
-  self.subtype = OklchColor
-end
-```
-
-Declare each attribute with that type:
+### Declare the model attribute
 
 ```ruby
 class ServiceIndustry < ApplicationRecord
-  attribute :color, OklchColorType.new
+  attribute :color, PgComposite::Type.new(value_class: OklchColor)
 end
 ```
 
-For a one-off declaration, `PgComposite::Type.new(value_class: OklchColor)` works too.
+## Values
 
-## Creating and updating records
-
-Pass a value object directly:
+Assign a value object directly:
 
 ```ruby
 color = OklchColor.new(lightness: 0.7, chroma: 0.15, hue: 180, alpha: 1)
@@ -134,25 +135,32 @@ industry = ServiceIndustry.create!(name: "Design", color: color)
 industry.reload.color.hue # => 180.0
 ```
 
-Or assign a hash. String keys and numeric strings are cast automatically:
+Assign a hash when you receive attributes from a form or API. String keys and numeric strings are cast:
 
 ```ruby
 industry.update!(color: { "lightness" => "0.7", "hue" => "250" })
 industry.color.hue # => 250.0
 ```
 
-A hash constructs a complete value using defaults for omitted members. To change one member while retaining the others:
+A hash creates a complete value. Omitted members use their defaults. To change one member and keep the others, assign the member on the existing value:
 
 ```ruby
 industry.color.hue = 120
 industry.save!
 ```
 
-Assigning `nil` clears the entire column. Explicit nil or empty-string members become nil. Use `industry.color.to_h` when you need a hash, such as for a JSON response. Add application validations for domain rules such as allowed color ranges.
+Assigning `nil` clears the whole column. An explicit nil or empty string makes a member nil. Use `to_h` when you need a hash:
 
-## Querying
+```ruby
+industry.color.to_h
+# => { lightness: 0.7, chroma: 0.0, hue: 120.0, alpha: 1.0 }
+```
 
-A hash matches only the members you supply:
+Malformed numeric input raises `ArgumentError`. Add application validations for rules such as allowed color ranges.
+
+## Queries
+
+A hash matches only the members you provide:
 
 ```ruby
 ServiceIndustry.where(color: { hue: 180 })
@@ -160,21 +168,21 @@ ServiceIndustry.where(color: { hue: 170...190, alpha: 1 })
 ServiceIndustry.where(color: { hue: [90, 180, 270] })
 ```
 
-A value object compares the whole color:
+A value object compares the whole composite:
 
 ```ruby
 ServiceIndustry.where(color: color)
 ServiceIndustry.where.not(color: color)
 ```
 
-For other comparisons and ordering, access members through Arel:
+Use Arel for member comparisons and ordering:
 
 ```ruby
 hue = ServiceIndustry.arel_table[:color][:hue]
 ServiceIndustry.where(hue.gteq(180)).order(hue.asc)
 ```
 
-You can select individual members too:
+Select or pluck a member when you need a scalar:
 
 ```ruby
 industry = ServiceIndustry.select(:id, hue.as("color_hue")).first
@@ -183,7 +191,7 @@ industry.color_hue # => a Float
 ServiceIndustry.pluck(hue) # => an array of hue values
 ```
 
-Selecting a member returns a scalar, not a partial color object. Select `:color` as well when you need the full value.
+Selecting a member returns a scalar. Select `:color` as well when you need the full value object.
 
 ## Forms
 
@@ -198,7 +206,13 @@ Nested fields submit a hash that the model attribute can cast:
 <% end %>
 ```
 
-Initialize a new record's color with `OklchColor.new` before rendering those fields. Permit the submitted members normally:
+Initialize a new record's color before rendering nested fields:
+
+```ruby
+industry = ServiceIndustry.new(color: OklchColor.new)
+```
+
+Permit submitted members as ordinary nested parameters:
 
 ```ruby
 params.require(:service_industry).permit(
@@ -206,18 +220,18 @@ params.require(:service_industry).permit(
 )
 ```
 
-The same attribute declaration works in a form object using `ActiveModel::Attributes`, allowing conversion before assignment to an Active Record model. Invalid numeric input raises `ArgumentError`; handle that conversion error in the form if you want inline feedback.
+The same attribute declaration works in a form object that includes `ActiveModel::Attributes`. It casts the form value before you assign it to an Active Record model. Handle numeric conversion errors in your form for inline feedback.
 
-### Typed values directly in params
+### Optional controller parameter casting
 
-Optionally include the parameter concern to convert a declared parameter before the action reads it:
+Include `PgComposite::Parameters` when you want a controller callback to cast a declared parameter before the action runs:
 
 ```ruby
 class ServiceIndustriesController < ApplicationController
   include PgComposite::Parameters
 
   cast_parameter [:service_industry, :color],
-    type: OklchColorType.new,
+    type: PgComposite::Type.new(value_class: OklchColor),
     permit: %i[lightness chroma hue alpha],
     only: %i[create update]
 
@@ -231,16 +245,118 @@ class ServiceIndustriesController < ApplicationController
 end
 ```
 
-Use `typed_parameters` instead of filtering the converted object with ordinary nested `permit`. It combines permitted ordinary fields with the already-filtered typed values. Missing color parameters remain missing; malformed supplied values produce a bad-request error.
+Use `typed_parameters` instead of filtering the converted object with ordinary nested `permit`. It combines permitted ordinary fields with the typed value. Missing color parameters remain missing. A malformed supplied value raises `ActionController::BadRequest`.
+
+## Schema validation
+
+PgComposite automatically checks persisted composite attributes when Active Record initializes a model's attribute types. You do not need to add a validation call.
+
+The check confirms that the composite type exists and that member names, count, and order match. It also checks that the table column uses the declared composite type.
+
+PgComposite does not compare the scalar types of individual members. Keep Ruby member types compatible with their database fields.
+
+Automatic checks apply to persisted Active Record attributes. Standalone values and virtual attributes have no table column to validate.
+
+Configure the check in an environment file or an initializer:
+
+```ruby
+# config/environments/development.rb
+PgComposite.configure do |config|
+  config.schema_validation = :error
+end
+```
+
+The available modes are:
+
+| Mode | Behavior |
+| --- | --- |
+| `:error` | Raise `PgComposite::SchemaMismatch` when the declaration does not match PostgreSQL. |
+| `:warn` | Log the mismatch and continue. Incorrect writes may continue. |
+| `:none` | Skip schema catalog queries. |
+
+The default is `:error` in Rails development and test environments, and `:none` in other Rails environments. Standalone Active Record applications use `:error` by default. Production uses `:none` unless you set another mode.
+
+PgComposite performs the automatic check once for each connection, schema, and declaration context. Call `Model.reset_column_information` after changing a database type in a running process. This invalidates prior checks. Development class reloads also discard the checks. Requiring PgComposite and constructing a value do not trigger a connection or a catalog query.
+
+To check a declaration directly, call the type method with a connection:
+
+```ruby
+PgComposite::Type.new(value_class: OklchColor).validate_schema!(
+  connection: ActiveRecord::Base.connection
+)
+```
+
+The explicit check validates the named composite and its members. It does not check a model column.
+
+`validate_schema!` always raises `PgComposite::SchemaMismatch` for a mismatch, regardless of `schema_validation`.
+
+## API reference
+
+### `PgComposite::Value`
+
+- `self.sql_type = name` declares the PostgreSQL composite type.
+- `member(name, type: :float, column: name, default: nil)` declares a member.
+- `new` accepts a hash, positional array, PostgreSQL record string, or another value of the same class. It casts each member.
+- `to_h` returns a symbol-keyed hash.
+- `serialize` returns PostgreSQL record text.
+
+### `PgComposite::Type`
+
+- `PgComposite::Type.new(value_class:, sql_type: nil)` creates an Active Model type.
+- `self.subtype = ValueClass` sets the default value class for a subclass.
+- `cast`, `serialize`, and `deserialize` integrate with Active Record attributes.
+- `validate_schema!(connection:)` checks the declaration and raises `PgComposite::SchemaMismatch` on mismatch.
+
+For a type shared across models or form objects, define a subclass:
+
+```ruby
+# app/types/oklch_color_type.rb
+class OklchColorType < PgComposite::Type
+  self.subtype = OklchColor
+end
+
+# In a model or form object:
+attribute :color, OklchColorType.new
+```
+
+### Configuration
+
+- `PgComposite.configure { |config| ... }` changes global configuration.
+- `config.schema_validation` accepts `:error`, `:warn`, or `:none`.
+
+### `PgComposite::Parameters`
+
+- `cast_parameter(path, type:, permit:, **callback_options)` registers a controller callback.
+- `typed_parameters(root = nil, permit: [])` returns permitted ordinary fields and the typed values cast by the callback.
+
+## Internals
+
+PgComposite extends Active Record and Arel when Active Record loads. Composite attributes return PgComposite Arel nodes for columns and members. PostgreSQL visitors render those nodes as composite SQL. The predicate builder handles member hashes such as `where(color: { hue: 180 })`.
+
+The patches preserve ordinary Active Record behavior for non-composite attributes. Non-PostgreSQL visitors raise `PgComposite::UnsupportedAdapter` when they receive a composite node.
 
 ## Development
 
-Run `bundle install`, then `bundle exec rspec`. Tests use PostgreSQL temporary tables; set `TEST_DATABASE_URL` if needed (default: `postgresql:///postgres`). Include a regression test with behavior changes.
+Run `bundle install`, then run:
+
+```sh
+bundle exec rspec
+```
+
+The suite needs a running PostgreSQL server and permission to create test schemas and types. It removes its test schemas afterward.
+Set `TEST_DATABASE_URL` when the default `postgresql:///postgres` connection is not available. SQLite tests verify unsupported-adapter behavior.
+
+To test a specific Rails version:
+
+```sh
+BUNDLE_GEMFILE=gemfiles/rails_7_2.gemfile bundle install
+BUNDLE_GEMFILE=gemfiles/rails_7_2.gemfile bundle exec rspec
+```
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/NicolasJJensen/pg_composite.
+Bug reports and pull requests are welcome on [GitHub](https://github.com/NicolasJJensen/pg_composite).
 
 ## License
 
-The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
+PgComposite is available under the [MIT License](https://opensource.org/licenses/MIT).
