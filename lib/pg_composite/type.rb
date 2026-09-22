@@ -25,5 +25,9 @@ module PgComposite
     def changed_in_place?(raw_old_value, new_value) = deserialize(raw_old_value) != cast(new_value)
     def as_json(value) = cast(value)&.to_h&.to_json
     def members = value_class.members
+
+    def validate_schema!(connection:)
+      Schema.new(self, connection).validate!
+    end
   end
 end
